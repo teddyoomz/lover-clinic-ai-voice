@@ -1,0 +1,28 @@
+ENVIRONMENT
+node_modules
+venv
+env
+.env
+# dot-files except .gitignore itself
+.DS_Store
+.idea
+.vscode
+~*
+/logs/
+/cache/
+# AI dev assistant files (not needed on other machines)
+/AGENTS.md
+/CLAUDE.md
+/GEMINI.md
+/QWEN.md
+/SPEC.md
+/CODEBASE_MAP.md
+/CONTEXT.md
+/*.txt
+# Cloned/generated at install time
+/app/
+/req_base.txt
+# User-specific runtime data
+/icon.png
+/session_state.json
+/user_uploads/

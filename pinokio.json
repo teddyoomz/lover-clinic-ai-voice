@@ -1,0 +1,9 @@
+{
+  "version": "5.0",
+  "title": "Lover Clinic - AI Voice System",
+  "description": "ระบบแปลงเสียง AI สำหรับ Lover Clinic — Voice Conversion, Thai TTS, Vocal Enhancer",
+  "icon": "icon.png",
+  "plugin": {
+    "menu": []
+  }
+}
