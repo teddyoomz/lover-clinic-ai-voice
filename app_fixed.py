@@ -29,13 +29,20 @@ import yaml
 import argparse
 from modules.commons import str2bool
 
-# Set up device
+# Set up device — verify CUDA actually works before committing to it
 if torch.cuda.is_available():
-    device = torch.device("cuda")
+    try:
+        torch.zeros(1, device="cuda")
+        device = torch.device("cuda")
+    except Exception as _cuda_err:
+        print(f"⚠️ CUDA available but failed smoke-test ({_cuda_err}) — falling back to CPU")
+        device = torch.device("cpu")
 elif torch.backends.mps.is_available():
     device = torch.device("mps")
 else:
     device = torch.device("cpu")
+
+print(f"[device] using: {device}")
 
 dtype = torch.float16
 
@@ -108,21 +115,41 @@ os.makedirs(_UPLOADS_DIR, exist_ok=True)
 
 
 def _load_state() -> dict:
+    """Load session state JSON. Distinguishes missing file from corrupt JSON."""
     try:
         with open(_STATE_FILE, encoding="utf-8") as f:
             return _json.load(f)
-    except Exception:
+    except FileNotFoundError:
+        return {}
+    except _json.JSONDecodeError as e:
+        # Back up the corrupted file so the user can inspect it
+        _bad = _STATE_FILE + ".corrupt"
+        try:
+            _shutil.copy2(_STATE_FILE, _bad)
+        except Exception:
+            pass
+        print(f"⚠️ session_state.json corrupt ({e}) — backed up to {_bad}, starting fresh")
+        return {}
+    except Exception as e:
+        print(f"⚠️ Could not load session state: {e}")
         return {}
 
 
 def _save_state(**kv):
+    """Atomically update session state (write → rename prevents corruption)."""
     state = _load_state()
     state.update(kv)
+    tmp = _STATE_FILE + ".tmp"
     try:
-        with open(_STATE_FILE, "w", encoding="utf-8") as f:
+        with open(tmp, "w", encoding="utf-8") as f:
             _json.dump(state, f, indent=2, ensure_ascii=False)
-    except Exception:
-        pass
+        os.replace(tmp, _STATE_FILE)   # atomic on Win32 + POSIX
+    except Exception as e:
+        print(f"⚠️ Could not save session state: {e}")
+        try:
+            os.remove(tmp)
+        except Exception:
+            pass
 
 
 def _persist_audio(filepath, key):
@@ -130,13 +157,14 @@ def _persist_audio(filepath, key):
     if not filepath:
         _save_state(**{key: None})
         return filepath
-    ext = os.path.splitext(filepath)[1] or ".wav"
+    # Always normalise to .wav so Gradio is happy on reload
+    ext = os.path.splitext(filepath)[1].lower() or ".wav"
     dest = os.path.join(_UPLOADS_DIR, f"{key}{ext}")
     try:
         _shutil.copy2(filepath, dest)
         _save_state(**{key: dest})
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"⚠️ Could not persist audio '{key}': {e}")
     return filepath
 
 
@@ -146,9 +174,15 @@ def _s(key, default=None):
 
 
 def _saved_audio(key):
-    """Return saved audio path only if the file still exists on disk."""
+    """Return saved audio path only if the file still exists and is readable."""
     p = _s(key)
-    return p if (p and os.path.exists(p)) else None
+    if p and os.path.isfile(p):
+        try:
+            if os.access(p, os.R_OK):
+                return p
+        except Exception:
+            pass
+    return None
 
 
 def _logo_html():
@@ -255,12 +289,15 @@ def load_v2_models(args):
     vc_wrapper.setup_ar_caches(max_batch_size=1, max_seq_len=4096, dtype=dtype, device=device)
 
     if args.compile:
-        print("Compiling model with torch.compile...")
-        torch._inductor.config.coordinate_descent_tuning = True
-        torch._inductor.config.triton.unique_kernel_names = True
-        if hasattr(torch._inductor.config, "fx_graph_cache"):
-            torch._inductor.config.fx_graph_cache = True
-        vc_wrapper.compile_ar()
+        if not hasattr(torch, "_inductor"):
+            print("⚠️ torch.compile requested but torch._inductor unavailable — skipping")
+        else:
+            print("Compiling model with torch.compile...")
+            torch._inductor.config.coordinate_descent_tuning = True
+            torch._inductor.config.triton.unique_kernel_names = True
+            if hasattr(torch._inductor.config, "fx_graph_cache"):
+                torch._inductor.config.fx_graph_cache = True
+            vc_wrapper.compile_ar()
 
     return vc_wrapper
 
@@ -269,6 +306,15 @@ def convert_voice_v1_wrapper(source_audio_path, target_audio_path, diffusion_ste
                              length_adjust=1.0, inference_cfg_rate=0.7, f0_condition=True,
                              auto_f0_adjust=True, pitch_shift=0):
     global vc_wrapper_v1
+    if vc_wrapper_v1 is None:
+        gr.Warning("V1 Voice Conversion ยังไม่โหลด — กรุณา Restart")
+        return None
+    if not source_audio_path:
+        gr.Warning("กรุณาอัปโหลดเสียงต้นทาง (Source Audio)")
+        return None
+    if not target_audio_path:
+        gr.Warning("กรุณาอัปโหลดเสียงอ้างอิง (Reference Audio)")
+        return None
     full_audio = None
     for _, audio in vc_wrapper_v1.convert_voice(
         source=source_audio_path,
@@ -291,7 +337,14 @@ def convert_voice_v2_wrapper(source_audio_path, target_audio_path, diffusion_ste
                              top_p=0.7, temperature=0.7, repetition_penalty=1.5,
                              convert_style=False, anonymization_only=False):
     global vc_wrapper_v2
-    if source_audio_path is None:
+    if vc_wrapper_v2 is None:
+        gr.Warning("V2 Voice Conversion ยังไม่โหลด — กรุณา Restart")
+        return None
+    if not source_audio_path:
+        gr.Warning("กรุณาอัปโหลดเสียงต้นทาง (Source Audio)")
+        return None
+    if not target_audio_path and not anonymization_only:
+        gr.Warning("กรุณาอัปโหลดเสียงอ้างอิง (Reference Audio)")
         return None
 
     full_audio = None
@@ -332,15 +385,24 @@ def generate_thai_speech(gen_text, ref_audio, ref_text, model_version, speed, nf
     if tts is None:
         gr.Warning(f"โมเดล Thai TTS {model_version} ยังไม่โหลด — กรุณา Restart")
         return None
-    wav = tts.infer(
-        ref_audio=ref_audio,
-        ref_text=ref_text.strip() if ref_text else "",
-        gen_text=gen_text.strip(),
-        step=int(nfe_steps),
-        cfg=cfg_strength,
-        speed=speed,
-    )
-    return (24000, wav)
+    try:
+        wav = tts.infer(
+            ref_audio=ref_audio,
+            ref_text=ref_text.strip() if ref_text else "",
+            gen_text=gen_text.strip(),
+            step=int(nfe_steps),
+            cfg=float(cfg_strength),
+            speed=float(speed),
+        )
+        return (24000, wav)
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        gr.Warning(f"TTS เกิดข้อผิดพลาด: {e}")
+        return None
+    finally:
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
 
 # ─────────────────────────────────────────────
@@ -376,7 +438,8 @@ def process_audio_enhancement(input_audio, do_isolate, do_denoise, do_enhance):
         # ── Step 1: Vocal isolation with Demucs ──
         if do_isolate:
             print("กำลังแยกเสียงพูด/ร้องออกจากพื้นหลัง (Demucs htdemucs)...")
-            model = load_demucs()
+            # Use preloaded model; only reload if preload failed at startup
+            model = demucs_model if demucs_model is not None else load_demucs()
             demucs_device = device if str(device) == "cuda" else torch.device("cpu")
 
             # Demucs requires stereo input [2, T] at model.samplerate (44100)
@@ -396,6 +459,11 @@ def process_audio_enhancement(input_audio, do_isolate, do_denoise, do_enhance):
 
             # htdemucs source order: drums=0, bass=1, other=2, vocals=3
             wav = sources[3].mean(0).cpu()  # mono vocals [T]
+
+            # Free GPU memory used by Demucs before resemble-enhance runs
+            del sources
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
 
         # ── Steps 2 & 3: resemble-enhance ──
         if do_denoise or do_enhance:
@@ -418,11 +486,17 @@ def process_audio_enhancement(input_audio, do_isolate, do_denoise, do_enhance):
                 )
                 wav = wav.squeeze()
 
-        return (int(sr), wav.cpu().numpy())
+        result = (int(sr), wav.cpu().numpy())
+        # Final GPU cleanup
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        return result
 
     except Exception as e:
         import traceback
         traceback.print_exc()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
         gr.Warning(f"เกิดข้อผิดพลาด: {str(e)}")
         return None
 
