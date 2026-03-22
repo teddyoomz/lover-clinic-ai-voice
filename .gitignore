@@ -23,6 +23,5 @@ env
 /app/
 /req_base.txt
 # User-specific runtime data
-/icon.png
 /session_state.json
 /user_uploads/
