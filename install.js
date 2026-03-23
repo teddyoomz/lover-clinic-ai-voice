@@ -68,5 +68,13 @@ module.exports = {
       }
     },
 
+    // ── 5. Auto-launch after install ──────────────────────────────────────
+    {
+      method: "script.start",
+      params: {
+        uri: "start.js"
+      }
+    },
+
   ]
 }

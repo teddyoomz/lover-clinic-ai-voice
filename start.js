@@ -32,6 +32,13 @@ module.exports = {
       params: {
         url: "{{input.event[1]}}"
       }
+    },
+    // ── Open default browser automatically ────────────────────────────────
+    {
+      method: "web.open",
+      params: {
+        uri: "{{local.url}}"
+      }
     }
   ]
 }
