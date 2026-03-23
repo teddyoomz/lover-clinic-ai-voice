@@ -1851,10 +1851,12 @@ hr {
             with gr.TabItem("⬇️ Downloader"):
                 build_downloader_tab()
 
-    # allow Gradio to serve files from the downloads folder for video/audio preview
+    # allow Gradio to serve output files that live outside the app/ working dir
     _downloads_root = os.path.join(_PROJ_ROOT, "downloads")
+    _video_out_root = os.path.join(_PROJ_ROOT, "video_output")
     os.makedirs(_downloads_root, exist_ok=True)
-    demo.launch(allowed_paths=[_downloads_root])
+    os.makedirs(_video_out_root, exist_ok=True)
+    demo.launch(allowed_paths=[_downloads_root, _video_out_root])
 
 
 if __name__ == "__main__":
