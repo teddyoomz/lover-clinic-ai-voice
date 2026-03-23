@@ -802,6 +802,125 @@ def build_tts_tab():
     )
 
 
+def extract_video_audio(video_path, output_format, mp3_quality):
+    """Extract audio stream from a video file using ffmpeg."""
+    import subprocess as _ffmpeg_sp
+
+    if not video_path:
+        gr.Warning("กรุณาอัปโหลดไฟล์วีดีโอ")
+        return None, "⚠️ ยังไม่ได้อัปโหลดไฟล์"
+
+    output_dir = os.path.join(_PROJ_ROOT, "video_output")
+    os.makedirs(output_dir, exist_ok=True)
+    base = os.path.splitext(os.path.basename(video_path))[0]
+    output_path = os.path.join(output_dir, f"{base}_audio.{output_format}")
+
+    try:
+        if output_format == "mp3":
+            cmd = [
+                "ffmpeg", "-y", "-i", video_path,
+                "-vn", "-acodec", "libmp3lame",
+                "-q:a", str(int(mp3_quality)),
+                output_path,
+            ]
+        else:  # wav
+            cmd = [
+                "ffmpeg", "-y", "-i", video_path,
+                "-vn", "-acodec", "pcm_s16le",
+                output_path,
+            ]
+
+        result = _ffmpeg_sp.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
+        if result.returncode != 0:
+            err_tail = result.stderr[-600:] if result.stderr else "ไม่มี output"
+            gr.Warning(f"ffmpeg ล้มเหลว (code {result.returncode})")
+            return None, f"✗ ffmpeg error:\n{err_tail}"
+
+        size_mb = os.path.getsize(output_path) / 1_048_576
+        return output_path, f"✓ แยกเสียงสำเร็จ — {os.path.basename(output_path)}  ({size_mb:.2f} MB)"
+
+    except FileNotFoundError:
+        gr.Warning("ไม่พบ ffmpeg — กรุณากด Install ใหม่อีกครั้ง")
+        return None, "✗ ไม่พบ ffmpeg ในระบบ"
+    except Exception as exc:
+        import traceback; traceback.print_exc()
+        gr.Warning(f"เกิดข้อผิดพลาด: {exc}")
+        return None, f"✗ {exc}"
+
+
+def build_video_tab():
+    """แยกเสียงออกจากไฟล์วีดีโอ (.mp4 .avi .mov .mkv .webm .m4v .flv)"""
+    gr.HTML(
+        '<div style="background:rgba(212,0,0,0.06); border:1px solid rgba(212,0,0,0.18); '
+        'border-radius:10px; padding:14px 18px; margin-bottom:4px;">'
+        '<span style="font-size:0.88rem; color:#ccc; line-height:1.7;">'
+        'แยกเสียงออกจากไฟล์วีดีโอด้วย <strong style="color:#fff;">ffmpeg</strong> '
+        '— รองรับ .mp4 .avi .mov .mkv .webm .m4v .flv .wmv<br>'
+        'บันทึกผลลัพธ์เป็น <strong style="color:#ff6666;">MP3</strong> (ไฟล์เล็ก) '
+        'หรือ <strong style="color:#ff6666;">WAV</strong> (คุณภาพสูง ไม่มีการ compress)'
+        '</span>'
+        '</div>'
+    )
+
+    with gr.Row():
+        with gr.Column(scale=1):
+            video_input = gr.File(
+                label="อัปโหลดไฟล์วีดีโอ",
+                file_types=[".mp4", ".avi", ".mov", ".mkv", ".webm", ".m4v", ".flv", ".wmv"],
+                file_count="single",
+            )
+            output_format = gr.Radio(
+                choices=["mp3", "wav"],
+                value="mp3",
+                label="รูปแบบเสียงผลลัพธ์",
+                info="MP3 = ไฟล์เล็ก เหมาะทั่วไป · WAV = ไม่บีบอัด คุณภาพสูงสุด",
+            )
+            mp3_quality = gr.Slider(
+                minimum=0, maximum=9, step=1, value=2,
+                label="MP3 Quality (ใช้เฉพาะ MP3)",
+                info="0 = คุณภาพสูงสุด ไฟล์ใหญ่ · 9 = คุณภาพต่ำสุด ไฟล์เล็กสุด · แนะนำ 2",
+                visible=True,
+            )
+            extract_btn = gr.Button("🎬 แยกเสียง", variant="primary", size="lg")
+
+        with gr.Column(scale=1):
+            output_audio = gr.Audio(
+                label="เสียงที่แยกได้",
+                type="filepath",
+                interactive=False,
+            )
+            status_box = gr.Textbox(
+                label="สถานะ",
+                lines=3,
+                interactive=False,
+                value="",
+            )
+            gr.HTML(
+                '<div style="margin-top:12px; padding:10px 12px; background:#111; '
+                'border-radius:8px; border:1px solid #1e1e1e;">'
+                '<span style="font-size:0.73rem; color:#555; line-height:1.8;">'
+                '<strong style="color:#888;">เคล็ดลับ:</strong><br>'
+                '• นำเสียงที่แยกได้ไปใช้เป็น Reference Audio ใน V1/V2<br>'
+                '• หรือนำไป Vocal Enhancer เพื่อทำความสะอาดก่อน<br>'
+                '• WAV เหมาะสำหรับนำไปต่อยอดใน Voice Conversion<br>'
+                '• ไฟล์ผลลัพธ์จะบันทึกไว้ที่ video_output/'
+                '</span>'
+                '</div>'
+            )
+
+    # Show/hide quality slider based on format
+    def _toggle_quality(fmt):
+        return gr.update(visible=(fmt == "mp3"))
+
+    output_format.change(fn=_toggle_quality, inputs=output_format, outputs=mp3_quality)
+
+    extract_btn.click(
+        fn=extract_video_audio,
+        inputs=[video_input, output_format, mp3_quality],
+        outputs=[output_audio, status_box],
+    )
+
+
 def build_enhancer_tab():
     """Renders Vocal Isolator + Enhancer components into the current Gradio context."""
     gr.Markdown(
@@ -1259,24 +1378,31 @@ hr {
             '<span>✨ <span style="color:#aaa; font-weight:600;">VOCAL ENHANCER</span>'
             ' <span style="color:#333">—</span>'
             ' <span style="color:#666">ทำความสะอาดเสียง</span></span>'
+            '<span style="color:#d40000;">·</span>'
+            '<span>🎬 <span style="color:#aaa; font-weight:600;">VIDEO → AUDIO</span>'
+            ' <span style="color:#333">—</span>'
+            ' <span style="color:#666">แยกเสียงจากวีดีโอ</span></span>'
             '</span>'
             '</div>'
         )
 
         with gr.Tabs():
             if args.enable_v1:
-                with gr.TabItem("🎙️ V1 — Voice (ภาษาไทย)"):
+                with gr.TabItem("🎙️ V1 Voice"):
                     build_v1_tab()
 
             if args.enable_v2:
-                with gr.TabItem("🔊 V2 — Style Conversion"):
+                with gr.TabItem("🔊 V2 Style"):
                     build_v2_tab()
 
             with gr.TabItem("🇹🇭 Thai TTS"):
                 build_tts_tab()
 
-            with gr.TabItem("✨ Vocal Enhancer"):
+            with gr.TabItem("✨ Enhancer"):
                 build_enhancer_tab()
+
+            with gr.TabItem("🎬 Video → Audio"):
+                build_video_tab()
 
     demo.launch()
 

@@ -46,7 +46,16 @@ module.exports = {
       }
     },
 
-    // ── 4. Install audio processing tools (must run after torch) ──────────
+    // ── 4. Install ffmpeg (cross-platform via conda) ───────────────────────
+    // Required by the "Video → Audio" tab to extract audio from video files.
+    {
+      method: "shell.run",
+      params: {
+        message: "conda install -c conda-forge ffmpeg -y"
+      }
+    },
+
+    // ── 5. Install audio processing tools (must run after torch) ──────────
     // demucs           — vocal separation (htdemucs), needs torch at install time
     // resemble-enhance — enhancement/denoising; uses deepspeed only for
     //                    training — deepspeed fails to compile on Windows so

@@ -25,3 +25,4 @@ env
 # User-specific runtime data
 /session_state.json
 /user_uploads/
+/video_output/
