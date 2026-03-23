@@ -33,11 +33,26 @@ module.exports = {
         url: "{{input.event[1]}}"
       }
     },
-    // ── Open default browser automatically ────────────────────────────────
+    // ── Open system default browser automatically ─────────────────────────
     {
-      method: "web.open",
+      method: "shell.run",
       params: {
-        uri: "{{local.url}}"
+        when: "{{platform === 'win32'}}",
+        message: "start \"\" \"{{local.url}}\""
+      }
+    },
+    {
+      method: "shell.run",
+      params: {
+        when: "{{platform === 'darwin'}}",
+        message: "open \"{{local.url}}\""
+      }
+    },
+    {
+      method: "shell.run",
+      params: {
+        when: "{{platform === 'linux'}}",
+        message: "xdg-open \"{{local.url}}\""
       }
     }
   ]
