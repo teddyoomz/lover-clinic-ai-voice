@@ -10,9 +10,17 @@ module.exports = {
       start: info.running("start.js"),
       update: info.running("update.js"),
       reset: info.running("reset.js"),
+      fix: info.running("fix.js"),
     }
 
-    if (running.install) {
+    if (running.fix) {
+      return [{
+        default: true,
+        icon: "fa-solid fa-wrench",
+        text: "Fixing...",
+        href: "fix.js",
+      }]
+    } else if (running.install) {
       return [{
         default: true,
         icon: "fa-solid fa-plug",
@@ -69,6 +77,10 @@ module.exports = {
           icon: "fa-solid fa-plug",
           text: "Install",
           href: "install.js",
+        }, {
+          icon: "fa-solid fa-wrench",
+          text: "<div><strong>Fix</strong><div>ติดตั้ง package ที่ขาดโดยไม่ต้อง Reset</div></div>",
+          href: "fix.js",
         }, {
           icon: "fa-regular fa-circle-xmark",
           text: "<div><strong>Reset</strong><div>Revert to pre-install state</div></div>",

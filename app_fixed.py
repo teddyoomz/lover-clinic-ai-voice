@@ -23,6 +23,32 @@ warnings.filterwarnings(
     category=UserWarning,
 )
 
+# ── Fix pydub ffmpeg path using imageio-ffmpeg bundled binary ──────────────
+# conda ffmpeg may crash (error 0xC0000005) on Windows due to DLL issues.
+# imageio-ffmpeg provides a self-contained binary that always works.
+# Auto-install if missing so the app is self-healing on first run.
+try:
+    import imageio_ffmpeg as _iio_ffmpeg
+except ImportError:
+    import subprocess as _pip_sp
+    _pip_sp.run([sys.executable, "-m", "pip", "install", "imageio-ffmpeg", "-q"], check=False)
+    try:
+        import imageio_ffmpeg as _iio_ffmpeg
+    except ImportError:
+        _iio_ffmpeg = None
+
+try:
+    if _iio_ffmpeg is not None:
+        from pydub import AudioSegment as _AS
+        _ffmpeg_exe = _iio_ffmpeg.get_ffmpeg_exe()
+        _AS.converter = _ffmpeg_exe
+        _AS.ffmpeg = _ffmpeg_exe
+        print(f"[pydub] using imageio-ffmpeg: {_ffmpeg_exe}")
+    else:
+        print("[pydub] imageio-ffmpeg not available, using system ffmpeg")
+except Exception as _e:
+    print(f"[pydub] ffmpeg setup warning: {_e}")
+
 import gradio as gr
 import torch
 import yaml
@@ -88,10 +114,25 @@ def _autofix_load(label, loader_fn, max_retries=8):
 
             tried_pkgs.add(pkg)
             print(f"  ↳ [{attempt}/{max_retries}] ขาด '{pkg}' — auto-install ...")
-            _sp.run(
-                [sys.executable, "-m", "pip", "install", pkg, "-q"],
-                check=False,
-            )
+            # resemble-enhance must be installed without its optional deepspeed dep
+            # (deepspeed fails to build on Windows without CUDA toolkit / nvcc)
+            if pkg in ("resemble_enhance", "resemble-enhance"):
+                _sp.run(
+                    [sys.executable, "-m", "pip", "install", "resemble-enhance", "--no-deps", "-q"],
+                    check=False,
+                )
+                _sp.run(
+                    [sys.executable, "-m", "pip", "install", "vocos", "tabulate", "-q"],
+                    check=False,
+                )
+                _stub = os.path.join(os.path.dirname(os.path.abspath(__file__)), "make_deepspeed_stub.py")
+                if os.path.exists(_stub):
+                    _sp.run([sys.executable, _stub], check=False)
+            else:
+                _sp.run(
+                    [sys.executable, "-m", "pip", "install", pkg, "-q"],
+                    check=False,
+                )
             # Flush cached (broken) imports so retry gets fresh modules
             flush_prefixes = (pkg, pkg.replace("-", "_"),
                               label, label.replace("-", "_"))
@@ -113,6 +154,88 @@ _STATE_FILE  = os.path.join(_PROJ_ROOT, "session_state.json")
 _UPLOADS_DIR = os.path.join(_PROJ_ROOT, "user_uploads")
 os.makedirs(_UPLOADS_DIR, exist_ok=True)
 
+# ─────────────────────────────────────────────
+# Shared Save-to-Folder utilities
+# ─────────────────────────────────────────────
+
+def _default_save_dir(subfolder: str) -> str:
+    """Return absolute path to downloads/<subfolder>, create if needed."""
+    p = os.path.join(_PROJ_ROOT, "downloads", subfolder)
+    os.makedirs(p, exist_ok=True)
+    return p
+
+
+def _save_audio_to_dir(audio, save_dir: str, prefix: str = "output") -> str:
+    """Copy/write an audio result into save_dir.
+
+    audio may be:
+      - str  : filepath already on disk (copy it)
+      - tuple: (sample_rate, np.ndarray) — write as WAV
+      - None : nothing to save
+    Returns a human-readable status string.
+    """
+    import datetime, soundfile as _sf
+
+    if audio is None:
+        return ""
+    if not save_dir or not save_dir.strip():
+        return "⚠️ กรุณาระบุโฟลเดอร์ปลายทาง"
+
+    save_dir = save_dir.strip()
+    os.makedirs(save_dir, exist_ok=True)
+    ts  = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+
+    try:
+        if isinstance(audio, str) and os.path.isfile(audio):
+            ext = os.path.splitext(audio)[1] or ".wav"
+            dst = os.path.join(save_dir, f"{prefix}_{ts}{ext}")
+            _shutil.copy2(audio, dst)
+        elif isinstance(audio, tuple) and len(audio) == 2:
+            sr, arr = audio
+            dst = os.path.join(save_dir, f"{prefix}_{ts}.wav")
+            _sf.write(dst, arr, sr)
+        else:
+            return "⚠️ ไม่รู้จักรูปแบบ audio output"
+
+        size_mb = os.path.getsize(dst) / 1_048_576
+        return f"💾 บันทึกที่: {dst}  ({size_mb:.1f} MB)"
+    except Exception as e:
+        return f"❌ บันทึกไม่สำเร็จ: {e}"
+
+
+def _open_folder(path: str) -> str:
+    """Open a folder in the system file explorer (Windows/macOS/Linux)."""
+    import subprocess as _sp2
+    path = (path or "").strip()
+    if not path:
+        return "⚠️ ระบุ path ก่อน"
+    os.makedirs(path, exist_ok=True)
+    try:
+        if sys.platform == "win32":
+            _sp2.Popen(f'explorer "{path}"')
+        elif sys.platform == "darwin":
+            _sp2.Popen(["open", path])
+        else:
+            _sp2.Popen(["xdg-open", path])
+        return f"📂 เปิด: {path}"
+    except Exception as e:
+        return f"❌ {e}"
+
+
+def _save_dir_row(default_subfolder: str, label: str = "📁 บันทึกที่"):
+    """Render a standardised save-dir row and return (textbox, open_btn, status)."""
+    with gr.Row():
+        save_dir = gr.Textbox(
+            value=_default_save_dir(default_subfolder),
+            label=label,
+            scale=5,
+            interactive=True,
+        )
+        open_btn = gr.Button("📂 เปิดโฟลเดอร์", variant="secondary", scale=1, min_width=130)
+    save_status = gr.Textbox(label="สถานะการบันทึก", interactive=False, lines=1, visible=True)
+    open_btn.click(fn=_open_folder, inputs=[save_dir], outputs=[save_status])
+    return save_dir, save_status
+
 
 def _load_state() -> dict:
     """Load session state JSON. Distinguishes missing file from corrupt JSON."""
@@ -129,27 +252,51 @@ def _load_state() -> dict:
         except Exception:
             pass
         print(f"⚠️ session_state.json corrupt ({e}) — backed up to {_bad}, starting fresh")
+        # Overwrite the corrupt file with a valid empty JSON immediately so
+        # concurrent requests stop seeing the corrupt content.
+        try:
+            with open(_STATE_FILE, "w", encoding="utf-8") as _f:
+                _f.write("{}\n")
+        except Exception:
+            pass
         return {}
     except Exception as e:
         print(f"⚠️ Could not load session state: {e}")
         return {}
 
 
+_STATE_LOCK = __import__("threading").Lock()
+
+
 def _save_state(**kv):
-    """Atomically update session state (write → rename prevents corruption)."""
-    state = _load_state()
-    state.update(kv)
-    tmp = _STATE_FILE + ".tmp"
-    try:
-        with open(tmp, "w", encoding="utf-8") as f:
-            _json.dump(state, f, indent=2, ensure_ascii=False)
-        os.replace(tmp, _STATE_FILE)   # atomic on Win32 + POSIX
-    except Exception as e:
-        print(f"⚠️ Could not save session state: {e}")
+    """Atomically update session state (write → rename prevents corruption).
+
+    Uses a threading.Lock + unique tmp filename to prevent concurrent writes
+    from corrupting the JSON (two threads writing to the same .tmp file).
+    """
+    import tempfile as _tmpfile
+    with _STATE_LOCK:
+        state = _load_state()
+        state.update(kv)
+        fd, tmp = _tmpfile.mkstemp(
+            prefix=".session_state_",
+            suffix=".tmp",
+            dir=os.path.dirname(_STATE_FILE),
+        )
         try:
-            os.remove(tmp)
-        except Exception:
-            pass
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                _json.dump(state, f, indent=2, ensure_ascii=False)
+            os.replace(tmp, _STATE_FILE)   # atomic on Win32 + POSIX
+        except Exception as e:
+            print(f"⚠️ Could not save session state: {e}")
+            try:
+                os.close(fd)
+            except Exception:
+                pass
+            try:
+                os.remove(tmp)
+            except Exception:
+                pass
 
 
 def _persist_audio(filepath, key):
@@ -266,8 +413,7 @@ _TTS_MOOD_PRESETS = {
 
 # ── Global model instances (all pre-loaded at startup) ──
 vc_wrapper_v1  = None
-vc_wrapper_v2  = None
-tts_models     = {}          # {"v1": TTS, "v2": TTS}
+tts_models     = {}          # {"v1": TTS}
 demucs_model   = None
 re_denoise_fn  = None        # resemble_enhance.enhancer.inference.denoise
 re_enhance_fn  = None        # resemble_enhance.enhancer.inference.enhance
@@ -277,30 +423,6 @@ RESEMBLE_ENHANCE_OK = False  # set to True once re_denoise_fn / re_enhance_fn lo
 # ─────────────────────────────────────────────
 # Voice Conversion helpers
 # ─────────────────────────────────────────────
-
-def load_v2_models(args):
-    from hydra.utils import instantiate
-    from omegaconf import DictConfig
-    cfg = DictConfig(yaml.safe_load(open("configs/v2/vc_wrapper.yaml", "r")))
-    vc_wrapper = instantiate(cfg)
-    vc_wrapper.load_checkpoints()
-    vc_wrapper.to(device)
-    vc_wrapper.eval()
-    vc_wrapper.setup_ar_caches(max_batch_size=1, max_seq_len=4096, dtype=dtype, device=device)
-
-    if args.compile:
-        if not hasattr(torch, "_inductor"):
-            print("⚠️ torch.compile requested but torch._inductor unavailable — skipping")
-        else:
-            print("Compiling model with torch.compile...")
-            torch._inductor.config.coordinate_descent_tuning = True
-            torch._inductor.config.triton.unique_kernel_names = True
-            if hasattr(torch._inductor.config, "fx_graph_cache"):
-                torch._inductor.config.fx_graph_cache = True
-            vc_wrapper.compile_ar()
-
-    return vc_wrapper
-
 
 def convert_voice_v1_wrapper(source_audio_path, target_audio_path, diffusion_steps=30,
                              length_adjust=1.0, inference_cfg_rate=0.7, f0_condition=True,
@@ -332,46 +454,72 @@ def convert_voice_v1_wrapper(source_audio_path, target_audio_path, diffusion_ste
     return full_audio
 
 
-def convert_voice_v2_wrapper(source_audio_path, target_audio_path, diffusion_steps=30,
-                             length_adjust=1.0, intelligebility_cfg_rate=0.7, similarity_cfg_rate=0.7,
-                             top_p=0.7, temperature=0.7, repetition_penalty=1.5,
-                             convert_style=False, anonymization_only=False):
-    global vc_wrapper_v2
-    if vc_wrapper_v2 is None:
-        gr.Warning("V2 Voice Conversion ยังไม่โหลด — กรุณา Restart")
-        return None
-    if not source_audio_path:
-        gr.Warning("กรุณาอัปโหลดเสียงต้นทาง (Source Audio)")
-        return None
-    if not target_audio_path and not anonymization_only:
-        gr.Warning("กรุณาอัปโหลดเสียงอ้างอิง (Reference Audio)")
-        return None
-
-    full_audio = None
-    for _, audio in vc_wrapper_v2.convert_voice_with_streaming(
-        source_audio_path=source_audio_path,
-        target_audio_path=target_audio_path,
-        diffusion_steps=diffusion_steps,
-        length_adjust=length_adjust,
-        intelligebility_cfg_rate=intelligebility_cfg_rate,
-        similarity_cfg_rate=similarity_cfg_rate,
-        top_p=top_p,
-        temperature=temperature,
-        repetition_penalty=repetition_penalty,
-        convert_style=convert_style,
-        anonymization_only=anonymization_only,
-        device=device,
-        dtype=dtype,
-        stream_output=True
-    ):
-        if audio is not None:
-            full_audio = audio
-    return full_audio
-
-
 # ─────────────────────────────────────────────
 # Thai TTS helper
 # ─────────────────────────────────────────────
+
+def _ensure_valid_wav(audio_path: str) -> str:
+    """Convert any audio to a fresh PCM-16 WAV using ffmpeg.
+
+    Handles paths with no extension, webm/ogg data inside .wav files
+    (browser MediaRecorder quirk in Gradio 5.x), and any other format
+    that soundfile cannot read directly.
+    Returns the original path unchanged if ffmpeg conversion fails.
+    """
+    import subprocess as _sub
+    import tempfile as _tmp
+
+    ffmpeg_exe = _get_ffmpeg_exe()
+    _fd, wav_path = _tmp.mkstemp(suffix=".wav")
+    os.close(_fd)
+    try:
+        r = _sub.run(
+            [ffmpeg_exe, "-y", "-i", audio_path, "-acodec", "pcm_s16le", wav_path],
+            capture_output=True,
+        )
+        if r.returncode == 0 and os.path.getsize(wav_path) > 0:
+            return wav_path
+        print(f"[warn] _ensure_valid_wav: ffmpeg exit {r.returncode}")
+    except Exception as _e:
+        print(f"[warn] _ensure_valid_wav: {_e}")
+    return audio_path
+
+
+def _transcribe_with_soundfile(wav_path: str) -> str:
+    """Transcribe a WAV file by reading it as numpy array and passing directly
+    to the Whisper ASR pipeline — bypasses transformers' ffmpeg_read which
+    calls the system ffmpeg subprocess and fails on Windows (DLL issues).
+    """
+    import soundfile as _sf
+    from f5_tts_th import utils_infer as _tts_utils
+
+    if _tts_utils.asr_pipe is None:
+        # initialize_asr_pipeline does `"cuda" in device` — needs a string, not torch.device
+        _tts_utils.initialize_asr_pipeline(device=str(device))
+
+    audio, sr = _sf.read(wav_path, dtype="float32")
+    if audio.ndim > 1:
+        audio = audio.mean(axis=1)  # stereo → mono
+
+    # Whisper expects 16 kHz; resample if needed
+    if sr != 16000:
+        try:
+            import scipy.signal as _sig
+            num_samples = int(len(audio) * 16000 / sr)
+            audio = _sig.resample(audio, num_samples)
+            sr = 16000
+        except ImportError:
+            pass  # pipeline can handle other sample rates too
+
+    result = _tts_utils.asr_pipe(
+        {"array": audio, "sampling_rate": sr},
+        chunk_length_s=30,
+        batch_size=128,
+        generate_kwargs={"task": "transcribe"},
+        return_timestamps=False,
+    )
+    return result["text"].strip()
+
 
 def generate_thai_speech(gen_text, ref_audio, ref_text, model_version, speed, nfe_steps, cfg_strength):
     if not gen_text or not gen_text.strip():
@@ -386,9 +534,23 @@ def generate_thai_speech(gen_text, ref_audio, ref_text, model_version, speed, nf
         gr.Warning(f"โมเดล Thai TTS {model_version} ยังไม่โหลด — กรุณา Restart")
         return None
     try:
+        ref_audio = _ensure_valid_wav(ref_audio)
+        # When ref_text is empty, f5-tts-th triggers ASR via transformers'
+        # ffmpeg_read which calls the system ffmpeg subprocess — this fails on
+        # Windows with conda's ffmpeg (DLL-not-found / malformed-soundfile).
+        # Fix: transcribe ourselves using soundfile (reads numpy array directly,
+        # no ffmpeg subprocess) so we can pass a real ref_text to tts.infer.
+        safe_ref_text = ref_text.strip() if ref_text else ""
+        if not safe_ref_text:
+            try:
+                safe_ref_text = _transcribe_with_soundfile(ref_audio)
+                print(f"[transcribe] auto ref_text: {safe_ref_text!r}")
+            except Exception as _trans_err:
+                print(f"[warn] transcribe fallback failed: {_trans_err}")
+                safe_ref_text = "สวัสดี"  # valid Thai → skip ASR & survive V2 th_to_g2p
         wav = tts.infer(
             ref_audio=ref_audio,
-            ref_text=ref_text.strip() if ref_text else "",
+            ref_text=safe_ref_text,
             gen_text=gen_text.strip(),
             step=int(nfe_steps),
             cfg=float(cfg_strength),
@@ -561,6 +723,8 @@ def build_v1_tab():
     run_btn = gr.Button("แปลงเสียง", variant="primary")
     output_audio = gr.Audio(label="เสียงผลลัพธ์ (Output Audio)", format="wav")
 
+    save_dir_v1, save_status_v1 = _save_dir_row("voice_v1")
+
     # ── State persistence ──
     source_audio.change(fn=lambda p: _persist_audio(p, "v1_source_audio"), inputs=source_audio, outputs=None)
     target_audio.change(fn=lambda p: _persist_audio(p, "v1_target_audio"), inputs=target_audio, outputs=None)
@@ -575,100 +739,335 @@ def build_v1_tab():
         fn=convert_voice_v1_wrapper,
         inputs=[source_audio, target_audio, diffusion_steps, length_adjust, cfg_rate, f0_condition, auto_f0, pitch_shift],
         outputs=output_audio,
+    ).then(
+        fn=lambda audio, d: _save_audio_to_dir(audio, d, "voice_v1"),
+        inputs=[output_audio, save_dir_v1],
+        outputs=[save_status_v1],
     )
 
 
-def build_v2_tab():
-    """Renders V2 Voice Conversion components directly into the current Gradio context."""
+def build_downloader_tab():
+    """YouTube / Facebook Reels video downloader — fetch qualities then download."""
+    import os, tempfile
+
+    DOWNLOAD_DIR = _default_save_dir("videos")
+
     gr.Markdown(
-        "แปลงเสียงและสไตล์แบบ Zero-shot รองรับการแปลงทั้งเสียง (timbre), สไตล์, อารมณ์ และสำเนียงการพูด\n\n"
-        "**ข้อควรทราบสำหรับภาษาไทย:** V2 ไม่มี F0 conditioning — "
-        "หากต้องการแปลงเสียงภาษาไทยโดยรักษาวรรณยุกต์ให้ครบถ้วน แนะนำใช้ **V1** ที่แท็บข้างๆ แทน "
-        "V2 เหมาะกว่าสำหรับการแปลงสำเนียงหรือสไตล์การพูด\n\n"
-        "**หมายเหตุ:** เสียงอ้างอิงที่ยาวเกิน 25 วินาทีจะถูกตัดอัตโนมัติ | "
-        "ถ้าความยาวรวมเกิน 30 วินาที เสียงต้นทางจะถูกแบ่งประมวลผลเป็นช่วงๆ\n\n"
-        "เปิด **แปลงสไตล์/อารมณ์/สำเนียง** เพื่อแปลงมากกว่าแค่ลักษณะเสียง | "
-        "เปิด **ไม่ระบุตัวตน** เพื่อแปลงเสียงเป็นเสียงกลางโดยไม่ใช้เสียงอ้างอิง"
+        "### ⬇️ Video Downloader\n"
+        "1) วางลิ้งก์แล้วกด **ดึงข้อมูล** เพื่อดูความละเอียดที่มี\n"
+        "2) เลือกความละเอียดที่ต้องการ แล้วกด **ดาวน์โหลด**\n\n"
+        "รองรับ: YouTube, Facebook, Instagram, TikTok และอีกกว่า 1,000 เว็บไซต์"
     )
 
+    # shared state ระหว่าง download generator กับ pause/stop handlers
+    _current = {"state": None}
+
+    class _StopDownload(BaseException):
+        """Raised inside yt-dlp progress hook to abort download (BaseException bypasses except Exception)."""
+
+    # ── URL + Fetch ──────────────────────────────────────────────────────────
     with gr.Row():
-        source_audio = gr.Audio(
-            type="filepath", label="เสียงต้นทาง (Source Audio)",
-            value=_saved_audio("v2_source_audio"),
+        url_input = gr.Textbox(
+            label="URL วีดีโอ",
+            placeholder="https://www.youtube.com/watch?v=...  หรือ  https://www.facebook.com/reel/...",
+            lines=1, scale=5,
         )
-        target_audio = gr.Audio(
-            type="filepath", label="เสียงอ้างอิง (Reference Audio)",
-            value=_saved_audio("v2_target_audio"),
+        fetch_btn = gr.Button("🔍 ดึงข้อมูล", variant="secondary", scale=1, min_width=120)
+
+    info_out = gr.Textbox(label="ข้อมูลวีดีโอ", interactive=False, lines=3, visible=False)
+
+    # ── Quality selector (hidden until fetch) ────────────────────────────────
+    quality_dd    = gr.Dropdown(label="เลือกความละเอียด", choices=[], visible=False, interactive=True)
+    quality_state = gr.State({})   # { label: yt-dlp format string }
+
+    # ── Save location + Download controls ───────────────────────────────────
+    save_dir_dl, save_status_dl = _save_dir_row("videos", label="📁 บันทึกวีดีโอที่")
+    with gr.Row():
+        download_btn = gr.Button("⬇️ ดาวน์โหลด", variant="primary",  visible=False, scale=4)
+        pause_btn    = gr.Button("⏸ พัก",         variant="secondary", visible=False, scale=1, min_width=100)
+        stop_btn     = gr.Button("⏹ หยุด",        variant="stop",      visible=False, scale=1, min_width=100)
+    dl_status  = gr.Textbox(label="สถานะ", interactive=False, lines=3)
+    video_out  = gr.Video(label="วีดีโอที่ดาวน์โหลด", interactive=False, visible=True)
+    audio_out  = gr.Audio(label="🎵 ฟังเพลง (Audio Only)", interactive=False, visible=False)
+    file_out   = gr.File(label="บันทึกไฟล์", interactive=False)
+
+    # ── Helper: get imageio-ffmpeg path ──────────────────────────────────────
+    def _ffmpeg():
+        try:
+            import imageio_ffmpeg as _iio
+            return _iio.get_ffmpeg_exe()
+        except Exception:
+            return None
+
+    # ── Helper: shared base ydl options ──────────────────────────────────────
+    def _base_ydl_opts():
+        import shutil as _sh
+        opts = {"quiet": True, "no_warnings": False, "color": False}
+        ffmpeg = _ffmpeg()
+        if ffmpeg:
+            opts["ffmpeg_location"] = ffmpeg
+        # js_runtimes must be dict: {runtime_name: {config}}
+        for bin_name, rt_key in [("node", "nodejs"), ("nodejs", "nodejs"), ("deno", "deno")]:
+            path = _sh.which(bin_name)
+            if path:
+                opts["js_runtimes"] = {rt_key: {"path": path}}
+                break
+        return opts
+
+    # ── Step 1: Fetch available qualities ────────────────────────────────────
+    def _fetch(url):
+        url = (url or "").strip()
+        if not url or not url.startswith(("http://", "https://")):
+            return (
+                gr.update(value="❌ URL ไม่ถูกต้อง", visible=True),
+                gr.update(choices=[], visible=False),
+                {},
+                gr.update(visible=False),
+            )
+
+        try:
+            import yt_dlp
+        except ImportError:
+            return (
+                gr.update(value="❌ ไม่พบ yt-dlp — กรุณากด Fix แล้ว Start ใหม่", visible=True),
+                gr.update(choices=[], visible=False),
+                {},
+                gr.update(visible=False),
+            )
+
+        ydl_opts = {**_base_ydl_opts(), "skip_download": True}
+
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(url, download=False)
+        except Exception as e:
+            return (
+                gr.update(value=f"❌ ดึงข้อมูลไม่สำเร็จ:\n{str(e)[-400:]}", visible=True),
+                gr.update(choices=[], visible=False),
+                {},
+                gr.update(visible=False),
+            )
+
+        title    = info.get("title", "Unknown")
+        duration = info.get("duration") or 0
+        dur_str  = f"{int(duration)//60}:{int(duration)%60:02d}" if duration else "?"
+        uploader = info.get("uploader") or info.get("channel") or ""
+
+        # ── Parse available video heights ────────────────────────────────────
+        formats = info.get("formats") or []
+        heights = sorted(
+            {f["height"] for f in formats
+             if f.get("height") and f.get("vcodec", "none") != "none" and f["height"] > 0},
+            reverse=True,
         )
 
-    diffusion_steps = gr.Slider(
-        minimum=1, maximum=200, value=_s("v2_diffusion_steps", 30), step=1,
-        label="Diffusion Steps",
-        info="จำนวนขั้นตอน diffusion — ยิ่งมากยิ่งได้คุณภาพดีแต่ใช้เวลานานขึ้น (ค่าเริ่มต้น 30, แนะนำ 50-100 สำหรับคุณภาพสูงสุด)",
-    )
-    length_adjust = gr.Slider(
-        minimum=0.5, maximum=2.0, step=0.1, value=_s("v2_length_adjust", 1.0),
-        label="ปรับความยาว (Length Adjust)",
-        info="ปรับความเร็วของเสียงผลลัพธ์ — น้อยกว่า 1.0 เร็วขึ้น, มากกว่า 1.0 ช้าลง",
-    )
-    intel_cfg = gr.Slider(
-        minimum=0.0, maximum=1.0, step=0.1, value=_s("v2_intel_cfg", 0.0),
-        label="Intelligibility CFG Rate",
-        info="ควบคุมความชัดเจนของการออกเสียง — ค่าสูงทำให้เสียงพูดชัดขึ้น แต่อาจลดความเหมือนเสียงอ้างอิง (ค่าเริ่มต้น 0.0)",
-    )
-    sim_cfg = gr.Slider(
-        minimum=0.0, maximum=1.0, step=0.1, value=_s("v2_sim_cfg", 0.7),
-        label="Similarity CFG Rate",
-        info="ควบคุมความเหมือนกับเสียงอ้างอิง — ค่าสูงทำให้เสียงผลลัพธ์ใกล้เคียงอ้างอิงมากขึ้น (ค่าเริ่มต้น 0.7)",
-    )
-    top_p = gr.Slider(
-        minimum=0.1, maximum=1.0, step=0.1, value=_s("v2_top_p", 0.9),
-        label="Top-p",
-        info="ควบคุมความหลากหลายในการสุ่มของโมเดล AR — ค่าต่ำลงทำให้ผลลัพธ์แน่นอนขึ้น (ค่าเริ่มต้น 0.9)",
-    )
-    temperature = gr.Slider(
-        minimum=0.1, maximum=2.0, step=0.1, value=_s("v2_temperature", 1.0),
-        label="Temperature",
-        info="ควบคุมความสุ่มของโมเดล AR — ค่าต่ำทำให้เสียงสม่ำเสมอขึ้น, ค่าสูงทำให้หลากหลายขึ้น (ค่าเริ่มต้น 1.0)",
-    )
-    rep_penalty = gr.Slider(
-        minimum=1.0, maximum=3.0, step=0.1, value=_s("v2_rep_penalty", 1.0),
-        label="Repetition Penalty",
-        info="ลงโทษการซ้ำของโมเดล AR — ค่าสูงขึ้นช่วยลดการติดซ้ำในเสียงผลลัพธ์ (ค่าเริ่มต้น 1.0)",
-    )
-    convert_style = gr.Checkbox(
-        label="แปลงสไตล์/อารมณ์/สำเนียง (Convert Style/Emotion/Accent)",
-        value=_s("v2_convert_style", False),
-        info="เปิดเพื่อแปลงสไตล์การพูด อารมณ์ และสำเนียง ไม่ใช่แค่ลักษณะเสียง (timbre)",
-    )
-    anon_only = gr.Checkbox(
-        label="ไม่ระบุตัวตน (Anonymization Only)",
-        value=_s("v2_anon_only", False),
-        info="แปลงเสียงเป็นเสียงกลางที่โมเดลกำหนดเอง โดยไม่สนใจเสียงอ้างอิงที่อัปโหลด",
+        HEIGHT_LABEL = {
+            2160: "4K (2160p)", 1440: "2K (1440p)", 1080: "Full HD (1080p)",
+            720:  "HD (720p)",  480:  "SD (480p)",  360:  "360p",
+            240:  "240p",       144:  "144p",
+        }
+
+        quality_map  = {}
+        quality_list = []
+
+        # Best auto — prefer H.264 (avc) for browser compatibility
+        lbl = "🏆 ดีที่สุด (อัตโนมัติ)"
+        quality_map[lbl] = (
+            "bestvideo[vcodec^=avc][ext=mp4]+bestaudio[ext=m4a]"
+            "/bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best"
+        )
+        quality_list.append(lbl)
+
+        for h in heights:
+            lbl = f"📹 {HEIGHT_LABEL.get(h, str(h)+'p')}"
+            quality_map[lbl] = (
+                f"bestvideo[height<={h}][vcodec^=avc][ext=mp4]+bestaudio[ext=m4a]"
+                f"/bestvideo[height<={h}][ext=mp4]+bestaudio[ext=m4a]"
+                f"/bestvideo[height<={h}]+bestaudio/best[height<={h}]/best"
+            )
+            quality_list.append(lbl)
+
+        # Audio only
+        lbl = "🎵 Audio เท่านั้น (mp3)"
+        quality_map[lbl] = "bestaudio/best"
+        quality_list.append(lbl)
+
+        info_text = f"📺 {title}"
+        if uploader:
+            info_text += f"  |  {uploader}"
+        info_text += f"\n⏱ {dur_str}  |  {len(heights)} ความละเอียด: {', '.join(str(h)+'p' for h in heights)}"
+
+        return (
+            gr.update(value=info_text, visible=True),
+            gr.update(choices=quality_list, value=quality_list[0], visible=True),
+            quality_map,
+            gr.update(visible=True),
+        )
+
+    # ── Step 2: Download with real-time progress + pause/stop ────────────────
+    def _download(url, selected, quality_map, save_dir):
+        import threading, time, re as _re
+
+        _noop      = gr.update()
+        _btn_dl_on  = gr.update(interactive=False, visible=True)
+        _btn_dl_off = gr.update(interactive=True,  visible=True)
+        _vis_on     = gr.update(visible=True)
+        _vis_off    = gr.update(visible=False)
+
+        def _err(msg):
+            return msg, _noop, _noop, _noop, _btn_dl_off, _vis_off, _vis_off
+
+        url = (url or "").strip()
+        if not url:
+            yield _err("กรุณาใส่ URL แล้วดึงข้อมูลก่อน"); return
+        if not selected or not quality_map:
+            yield _err("กรุณากด ดึงข้อมูล แล้วเลือกความละเอียดก่อน"); return
+
+        try:
+            import yt_dlp
+        except ImportError:
+            yield _err("ไม่พบ yt-dlp — กรุณากด Fix แล้ว Start ใหม่"); return
+
+        fmt_str  = quality_map.get(selected, "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best")
+        is_audio = selected.startswith("🎵")
+        out_dir  = (save_dir or "").strip() or DOWNLOAD_DIR
+        os.makedirs(out_dir, exist_ok=True)
+        out_tmpl = os.path.join(out_dir,
+            "%(title).80s_audio.%(ext)s" if is_audio else "%(title).80s_%(height)sp.%(ext)s")
+
+        # ── Shared state ─────────────────────────────────────────────────────
+        state = {"line": "⏳ กำลังเตรียม...", "done": False,
+                 "error": None, "info": None,
+                 "stop": False, "paused": False, "stopped_by_user": False}
+        _current["state"] = state
+
+        _ansi = _re.compile(r"\x1b\[[0-9;]*m")
+        def _clean(s): return _ansi.sub("", s or "").strip()
+
+        def _hook(d):
+            # pause: block download thread until unpaused or stopped
+            while state["paused"] and not state["stop"]:
+                time.sleep(0.1)
+            if state["stop"]:
+                raise _StopDownload()
+
+            status = d.get("status", "")
+            if status == "downloading":
+                pct    = _clean(d.get("_percent_str")  or "?%")
+                speed  = _clean(d.get("_speed_str")    or "?")
+                eta    = _clean(d.get("_eta_str")       or "?")
+                done_b = _clean(d.get("_downloaded_bytes_str") or "?")
+                tot_b  = _clean(d.get("_total_bytes_str") or
+                                d.get("_total_bytes_estimate_str") or "?")
+                try:
+                    filled = int(float(pct.replace("%","")) / 5)
+                    bar = "█"*filled + "░"*(20-filled)
+                except Exception:
+                    bar = "░"*20
+                pause_note = "  ⏸ พักอยู่" if state["paused"] else ""
+                state["line"] = (f"⬇️  [{bar}] {pct}{pause_note}\n"
+                                 f"📦 {done_b} / {tot_b}   🚀 {speed}   ⏱ ETA {eta}")
+            elif status == "finished":
+                state["line"] = (f"✅ ดาวน์โหลดไฟล์เสร็จ — กำลัง merge/convert...\n"
+                                 f"📄 {os.path.basename(d.get('filename',''))}")
+
+        ydl_opts = {
+            **_base_ydl_opts(),
+            "format": fmt_str, "outtmpl": out_tmpl,
+            "noplaylist": True, "progress_hooks": [_hook],
+            "format_sort": ["vcodec:h264","acodec:aac","ext:mp4:m4a"],
+            "prefer_free_formats": False,
+        }
+        if not is_audio:
+            ydl_opts["merge_output_format"] = "mp4"
+        else:
+            ydl_opts["postprocessors"] = [{"key": "FFmpegExtractAudio",
+                                           "preferredcodec": "mp3",
+                                           "preferredquality": "192"}]
+
+        def _run():
+            try:
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                    state["info"] = ydl.extract_info(url, download=True)
+            except _StopDownload:
+                state["stopped_by_user"] = True
+            except Exception as e:
+                state["error"] = str(e)
+            finally:
+                state["done"] = True
+
+        threading.Thread(target=_run, daemon=True).start()
+
+        # ── Stream loop ───────────────────────────────────────────────────────
+        try:
+            while not state["done"]:
+                yield state["line"], _noop, _noop, _noop, _btn_dl_on, _vis_on, _vis_on
+                time.sleep(0.4)
+
+            # ── Stopped by user ───────────────────────────────────────────────
+            if state["stopped_by_user"]:
+                yield "⏹ หยุดดาวน์โหลดแล้ว", _noop, _noop, _noop, _btn_dl_off, _vis_off, _vis_off
+                return
+
+            # ── Error ─────────────────────────────────────────────────────────
+            if state["error"]:
+                yield (f"❌ ดาวน์โหลดไม่สำเร็จ:\n{state['error'][-500:]}",
+                       _noop, _noop, _noop, _btn_dl_off, _vis_off, _vis_off)
+                return
+
+            # ── Success ───────────────────────────────────────────────────────
+            all_files = [os.path.join(out_dir, f) for f in os.listdir(out_dir)
+                         if os.path.isfile(os.path.join(out_dir, f))]
+            if not all_files:
+                yield "ดาวน์โหลดสำเร็จแต่หาไฟล์ไม่พบ", _noop, _noop, _noop, _btn_dl_off, _vis_off, _vis_off
+                return
+
+            filepath = max(all_files, key=os.path.getmtime)
+            size_mb  = os.path.getsize(filepath) / 1_048_576
+            fname    = os.path.basename(filepath)
+            ext      = os.path.splitext(fname)[1].upper().lstrip(".")
+            title    = (state["info"] or {}).get("title", "video")
+            msg      = f"✅ {title}\n📁 {fname}  ({size_mb:.1f} MB)  [{ext}]\n📂 {out_dir}"
+
+            if is_audio:
+                yield msg, gr.update(value=None,visible=False), gr.update(value=filepath,visible=True), filepath, _btn_dl_off, _vis_off, _vis_off
+            else:
+                yield msg, gr.update(value=filepath,visible=True), gr.update(value=None,visible=False), filepath, _btn_dl_off, _vis_off, _vis_off
+
+        except Exception as e:
+            yield f"❌ {e}", _noop, _noop, _noop, _btn_dl_off, _vis_off, _vis_off
+        finally:
+            _current["state"] = None
+
+    # ── Pause toggle ──────────────────────────────────────────────────────────
+    def _pause_toggle():
+        s = _current.get("state")
+        if not s:
+            return gr.update()
+        s["paused"] = not s["paused"]
+        return gr.update(value="▶ ต่อ" if s["paused"] else "⏸ พัก")
+
+    # ── Stop ──────────────────────────────────────────────────────────────────
+    def _stop_download():
+        s = _current.get("state")
+        if s:
+            s["stop"] = True
+
+    # ── Wire events ──────────────────────────────────────────────────────────
+    fetch_btn.click(
+        fn=_fetch,
+        inputs=[url_input],
+        outputs=[info_out, quality_dd, quality_state, download_btn],
     )
 
-    run_btn = gr.Button("แปลงเสียง", variant="primary")
-    output_audio = gr.Audio(label="เสียงผลลัพธ์ (Output Audio)", format="wav")
-
-    # ── State persistence ──
-    source_audio.change(fn=lambda p: _persist_audio(p, "v2_source_audio"), inputs=source_audio, outputs=None)
-    target_audio.change(fn=lambda p: _persist_audio(p, "v2_target_audio"), inputs=target_audio, outputs=None)
-    diffusion_steps.change(fn=lambda v: _save_state(v2_diffusion_steps=v), inputs=diffusion_steps, outputs=None)
-    length_adjust.change(fn=lambda v: _save_state(v2_length_adjust=v), inputs=length_adjust, outputs=None)
-    intel_cfg.change(fn=lambda v: _save_state(v2_intel_cfg=v), inputs=intel_cfg, outputs=None)
-    sim_cfg.change(fn=lambda v: _save_state(v2_sim_cfg=v), inputs=sim_cfg, outputs=None)
-    top_p.change(fn=lambda v: _save_state(v2_top_p=v), inputs=top_p, outputs=None)
-    temperature.change(fn=lambda v: _save_state(v2_temperature=v), inputs=temperature, outputs=None)
-    rep_penalty.change(fn=lambda v: _save_state(v2_rep_penalty=v), inputs=rep_penalty, outputs=None)
-    convert_style.change(fn=lambda v: _save_state(v2_convert_style=v), inputs=convert_style, outputs=None)
-    anon_only.change(fn=lambda v: _save_state(v2_anon_only=v), inputs=anon_only, outputs=None)
-
-    run_btn.click(
-        fn=convert_voice_v2_wrapper,
-        inputs=[source_audio, target_audio, diffusion_steps, length_adjust, intel_cfg, sim_cfg,
-                top_p, temperature, rep_penalty, convert_style, anon_only],
-        outputs=output_audio,
+    download_btn.click(
+        fn=_download,
+        inputs=[url_input, quality_dd, quality_state, save_dir_dl],
+        outputs=[dl_status, video_out, audio_out, file_out, download_btn, pause_btn, stop_btn],
     )
+
+    pause_btn.click(fn=_pause_toggle, inputs=[], outputs=[pause_btn])
+    stop_btn.click(fn=_stop_download, inputs=[], outputs=[])
 
 
 def build_tts_tab():
@@ -795,11 +1194,39 @@ def build_tts_tab():
     ref_audio.change(fn=lambda p: _persist_audio(p, "tts_ref_audio"), inputs=ref_audio, outputs=None)
     ref_text.change(fn=lambda v: _save_state(tts_ref_text=v), inputs=ref_text, outputs=None)
 
+    save_dir_tts, save_status_tts = _save_dir_row("tts")
+
     generate_btn.click(
         fn=generate_thai_speech,
         inputs=[gen_text, ref_audio, ref_text, model_version, speed, nfe_steps, cfg_strength],
         outputs=output_audio,
+    ).then(
+        fn=lambda audio, d: _save_audio_to_dir(audio, d, "tts"),
+        inputs=[output_audio, save_dir_tts],
+        outputs=[save_status_tts],
     )
+
+
+def _get_ffmpeg_exe():
+    """Return path to a working ffmpeg binary.
+
+    Prefers imageio-ffmpeg (bundled, no external DLL deps) so we avoid
+    the Windows 0xC0000135 (DLL-not-found) issue with conda's ffmpeg.
+    Falls back to shutil.which if imageio-ffmpeg is not available.
+    """
+    import shutil as _shutil
+    try:
+        import imageio_ffmpeg as _iio_ff
+        return _iio_ff.get_ffmpeg_exe()
+    except ImportError:
+        _sp.run([sys.executable, "-m", "pip", "install", "imageio-ffmpeg", "-q"], check=False)
+        try:
+            import imageio_ffmpeg as _iio_ff
+            return _iio_ff.get_ffmpeg_exe()
+        except ImportError:
+            pass
+    # Final fallback: system ffmpeg
+    return _shutil.which("ffmpeg") or "ffmpeg"
 
 
 def extract_video_audio(video_path, output_format, mp3_quality):
@@ -815,17 +1242,19 @@ def extract_video_audio(video_path, output_format, mp3_quality):
     base = os.path.splitext(os.path.basename(video_path))[0]
     output_path = os.path.join(output_dir, f"{base}_audio.{output_format}")
 
+    ffmpeg_exe = _get_ffmpeg_exe()
+
     try:
         if output_format == "mp3":
             cmd = [
-                "ffmpeg", "-y", "-i", video_path,
+                ffmpeg_exe, "-y", "-i", video_path,
                 "-vn", "-acodec", "libmp3lame",
                 "-q:a", str(int(mp3_quality)),
                 output_path,
             ]
         else:  # wav
             cmd = [
-                "ffmpeg", "-y", "-i", video_path,
+                ffmpeg_exe, "-y", "-i", video_path,
                 "-vn", "-acodec", "pcm_s16le",
                 output_path,
             ]
@@ -903,20 +1332,29 @@ def build_video_tab():
                 '• นำเสียงที่แยกได้ไปใช้เป็น Reference Audio ใน V1/V2<br>'
                 '• หรือนำไป Vocal Enhancer เพื่อทำความสะอาดก่อน<br>'
                 '• WAV เหมาะสำหรับนำไปต่อยอดใน Voice Conversion<br>'
-                '• ไฟล์ผลลัพธ์จะบันทึกไว้ที่ video_output/'
+                '• WAV เหมาะสำหรับนำไปต่อยอดใน Voice Conversion'
                 '</span>'
                 '</div>'
             )
+
+    save_dir_vid, save_status_vid = _save_dir_row("video_audio")
 
     # Show/hide quality slider based on format
     def _toggle_quality(fmt):
         return gr.update(visible=(fmt == "mp3"))
 
+    def _extract_and_save(video_path, fmt, mp3q, save_dir):
+        audio_path, status = extract_video_audio(video_path, fmt, mp3q)
+        if audio_path:
+            save_msg = _save_audio_to_dir(audio_path, save_dir, "video_audio")
+            return audio_path, status + "\n" + save_msg
+        return audio_path, status
+
     output_format.change(fn=_toggle_quality, inputs=output_format, outputs=mp3_quality)
 
     extract_btn.click(
-        fn=extract_video_audio,
-        inputs=[video_input, output_format, mp3_quality],
+        fn=_extract_and_save,
+        inputs=[video_input, output_format, mp3_quality, save_dir_vid],
         outputs=[output_audio, status_box],
     )
 
@@ -972,6 +1410,8 @@ def build_enhancer_tab():
                 "- หลังได้เสียงที่สะอาดแล้ว ให้นำไปใช้เป็น Reference Audio ใน V1/V2"
             )
 
+    save_dir_enh, save_status_enh = _save_dir_row("enhanced")
+
     # ── State persistence ──
     input_audio.change(fn=lambda p: _persist_audio(p, "enh_input_audio"), inputs=input_audio, outputs=None)
     do_isolate.change(fn=lambda v: _save_state(enh_do_isolate=v), inputs=do_isolate, outputs=None)
@@ -982,6 +1422,10 @@ def build_enhancer_tab():
         fn=process_audio_enhancement,
         inputs=[input_audio, do_isolate, do_denoise, do_enhance],
         outputs=output_audio,
+    ).then(
+        fn=lambda audio, d: _save_audio_to_dir(audio, d, "enhanced"),
+        inputs=[output_audio, save_dir_enh],
+        outputs=[save_status_enh],
     )
 
 
@@ -991,25 +1435,16 @@ def build_enhancer_tab():
 
 def preload_all_models(args):
     """Eagerly load every model at startup so there is zero wait on first use."""
-    global vc_wrapper_v1, vc_wrapper_v2, demucs_model
+    global vc_wrapper_v1, demucs_model
     global tts_models, re_denoise_fn, re_enhance_fn, RESEMBLE_ENHANCE_OK
 
-    total = sum([args.enable_v2, args.enable_v1, True, True, True])
+    total = sum([args.enable_v1, True, True, True])
     step  = 0
 
     def _step(name):
         nonlocal step
         step += 1
         print(f"\n[{step}/{total}] กำลังโหลด {name} ...")
-
-    # ── V2 ──────────────────────────────────────────
-    if args.enable_v2:
-        _step("V2 Voice Conversion (ASTRAL + BigVGAN)")
-        try:
-            vc_wrapper_v2 = load_v2_models(args)
-            print(f"[{step}/{total}] ✓ V2 พร้อมใช้งาน")
-        except Exception as e:
-            print(f"[{step}/{total}] ✗ V2 โหลดไม่สำเร็จ: {e}")
 
     # ── V1 ──────────────────────────────────────────
     if args.enable_v1:
@@ -1024,7 +1459,7 @@ def preload_all_models(args):
     # ── Demucs ──────────────────────────────────────
     _step("Demucs htdemucs (Vocal Isolation, ดาวน์โหลด ~80 MB ถ้าครั้งแรก)")
     try:
-        load_demucs()
+        _autofix_load("demucs", load_demucs)
         print(f"[{step}/{total}] ✓ Demucs พร้อมใช้งาน")
     except Exception as e:
         print(f"[{step}/{total}] ✗ Demucs โหลดไม่สำเร็จ: {e}")
@@ -1067,11 +1502,7 @@ def preload_all_models(args):
 
 
 def main(args):
-    global vc_wrapper_v1, vc_wrapper_v2
-
-    if not args.enable_v1 and not args.enable_v2:
-        print("Error: At least one version (V1 or V2) must be enabled.")
-        return
+    global vc_wrapper_v1
 
     preload_all_models(args)
 
@@ -1382,6 +1813,10 @@ hr {
             '<span>🎬 <span style="color:#aaa; font-weight:600;">VIDEO → AUDIO</span>'
             ' <span style="color:#333">—</span>'
             ' <span style="color:#666">แยกเสียงจากวีดีโอ</span></span>'
+            '<span style="color:#d40000;">·</span>'
+            '<span>⬇️ <span style="color:#aaa; font-weight:600;">DOWNLOADER</span>'
+            ' <span style="color:#333">—</span>'
+            ' <span style="color:#666">YouTube / Facebook</span></span>'
             '</span>'
             '</div>'
         )
@@ -1390,10 +1825,6 @@ hr {
             if args.enable_v1:
                 with gr.TabItem("🎙️ V1 Voice"):
                     build_v1_tab()
-
-            if args.enable_v2:
-                with gr.TabItem("🔊 V2 Style"):
-                    build_v2_tab()
 
             with gr.TabItem("🇹🇭 Thai TTS"):
                 build_tts_tab()
@@ -1404,7 +1835,13 @@ hr {
             with gr.TabItem("🎬 Video → Audio"):
                 build_video_tab()
 
-    demo.launch()
+            with gr.TabItem("⬇️ Downloader"):
+                build_downloader_tab()
+
+    # allow Gradio to serve files from the downloads folder for video/audio preview
+    _downloads_root = os.path.join(_PROJ_ROOT, "downloads")
+    os.makedirs(_downloads_root, exist_ok=True)
+    demo.launch(allowed_paths=[_downloads_root])
 
 
 if __name__ == "__main__":
@@ -1412,7 +1849,5 @@ if __name__ == "__main__":
     parser.add_argument("--compile", action="store_true", help="Compile the model using torch.compile")
     parser.add_argument("--enable-v1", action="store_true",
                         help="Enable V1 (Voice & Singing Voice Conversion)")
-    parser.add_argument("--enable-v2", action="store_true",
-                        help="Enable V2 (Voice & Style Conversion)")
     args = parser.parse_args()
     main(args)

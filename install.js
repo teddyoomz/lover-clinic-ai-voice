@@ -24,7 +24,9 @@ module.exports = {
         venv: "env",
         path: "app",
         message: [
-          "python -c \"lines=[l for l in open('requirements.txt') if '--index-url' not in l]; open('../req_base.txt','w').writelines(lines)\"",
+          // กรอง torch/torchvision/torchaudio และ --index-url ออกทั้งหมด
+          // torch.js (step ถัดไป) จะ detect GPU แล้วลง CUDA/CPU build ที่ถูกต้องเอง
+          "python -c \"import re; skip={'torch','torchvision','torchaudio'}; lines=[l for l in open('requirements.txt') if '--index-url' not in l and re.split(r'[=<>! \\t]',l.strip())[0].lower() not in skip]; open('../req_base.txt','w').writelines(lines)\"",
           "python -c \"import subprocess,sys; r=subprocess.run(['pip','install','-r','../req_base.txt'],capture_output=True,text=True); [print(l) for l in r.stdout.splitlines() if 'dependency resolver' not in l and \\\"pip's dependency\\\" not in l]; sys.exit(0)\"",
           "uv pip install f5-tts-th",
         ]
@@ -55,12 +57,25 @@ module.exports = {
       }
     },
 
+    // ── 4b. Install yt-dlp for YouTube / Facebook video downloader tab ─────
+    {
+      method: "shell.run",
+      params: {
+        venv: "env",
+        path: "app",
+        message: "uv pip install yt-dlp"
+      }
+    },
+
     // ── 5. Install audio processing tools (must run after torch) ──────────
     // demucs           — vocal separation (htdemucs), needs torch at install time
     // resemble-enhance — enhancement/denoising; uses deepspeed only for
     //                    training — deepspeed fails to compile on Windows so
     //                    install with --no-deps and add vocos separately
-    // vocos             — the one missing dep of resemble-enhance
+    // vocos            — the one missing dep of resemble-enhance
+    // imageio-ffmpeg   — self-contained ffmpeg binary (no external DLL deps),
+    //                    fixes Windows 0xC0000135 DLL-not-found crash with
+    //                    conda's ffmpeg when used via pydub / subprocess
     {
       method: "shell.run",
       params: {
@@ -70,6 +85,7 @@ module.exports = {
           "uv pip install demucs",
           "uv pip install resemble-enhance --no-deps",
           "uv pip install vocos tabulate",
+          "uv pip install imageio-ffmpeg",
           // Create a minimal deepspeed stub so resemble-enhance can import on
           // Windows without needing the real deepspeed (which requires MSVC).
           // The stub is skipped automatically if real deepspeed is installed.

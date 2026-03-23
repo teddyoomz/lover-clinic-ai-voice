@@ -2,10 +2,11 @@ module.exports = {
   run: [
 
     // ── 1. Pull latest launcher scripts from GitHub ───────────────────────
+    // reset --hard ให้ได้ latest เสมอ ไม่ติด local changes
     {
       method: "shell.run",
       params: {
-        message: "git pull"
+        message: "git fetch origin && git reset --hard origin/main"
       }
     },
 
@@ -65,6 +66,8 @@ module.exports = {
           "uv pip install demucs",
           "uv pip install resemble-enhance --no-deps",
           "uv pip install vocos tabulate",
+          "uv pip install imageio-ffmpeg",
+          "uv pip install yt-dlp",
           "python ../make_deepspeed_stub.py",
         ]
       }

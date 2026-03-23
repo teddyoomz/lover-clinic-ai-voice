@@ -3,11 +3,12 @@ module.exports = {
   run: [
 
     // ── Auto-update: ดึง launcher scripts ล่าสุดจาก GitHub ──────────────
-    // ทำทุกครั้งที่กด Start — ถ้าไม่มี internet หรือ git fail ให้ข้ามต่อ
+    // fetch → reset hard ให้ได้ latest เสมอ ไม่ติด local changes
+    // ถ้า internet หรือ git fail ให้ข้ามต่อไปได้เลย
     {
       method: "shell.run",
       params: {
-        message: "git pull --ff-only || echo [auto-update] git pull skipped"
+        message: "git fetch origin && git reset --hard origin/main || echo [auto-update] skipped"
       }
     },
 
@@ -18,7 +19,7 @@ module.exports = {
         venv: "env",
         path: "app",
         message: [
-          "python ../app_fixed.py --enable-v1 --enable-v2",
+          "python ../app_fixed.py --enable-v1",
         ],
         on: [{
           event: "/(http:\\/\\/[0-9.:]+)/",
