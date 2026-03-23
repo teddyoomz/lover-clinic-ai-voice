@@ -19,9 +19,10 @@ module.exports = {
       }
     },
 
-    // ── 3. Re-install Python deps (filter --index-url to avoid conflicts) ──
-    // Same strategy as install.js: strip --index-url lines from requirements.txt
-    // before running pip, to avoid torch nightly conflicts.
+    // ── 3. Re-install Python deps + imageio-ffmpeg + yt-dlp ──────────────
+    // imageio-ffmpeg: bundled static ffmpeg binary (no conda/DLL needed).
+    // yt-dlp: YouTube/Facebook downloader tab.
+    // Both installed early so later step failures don't affect these tabs.
     {
       method: "shell.run",
       params: {
@@ -31,12 +32,13 @@ module.exports = {
           "python -c \"lines=[l for l in open('requirements.txt') if '--index-url' not in l]; open('../req_base.txt','w').writelines(lines)\"",
           "python -c \"import subprocess,sys; r=subprocess.run(['pip','install','-r','../req_base.txt'],capture_output=True,text=True); [print(l) for l in r.stdout.splitlines() if 'dependency resolver' not in l and \\\"pip's dependency\\\" not in l]; sys.exit(0)\"",
           "uv pip install f5-tts-th",
+          "uv pip install imageio-ffmpeg",
+          "uv pip install yt-dlp",
         ]
       }
     },
 
     // ── 4. Re-install GPU-optimised PyTorch ───────────────────────────────
-    // Ensures correct torch build if machine GPU config has changed.
     {
       method: "script.start",
       params: {
@@ -48,15 +50,7 @@ module.exports = {
       }
     },
 
-    // ── 5. Ensure ffmpeg is available (for Video → Audio tab) ────────────
-    {
-      method: "shell.run",
-      params: {
-        message: "conda install -c conda-forge ffmpeg -y"
-      }
-    },
-
-    // ── 6. Re-install audio tools + refresh deepspeed stub ───────────────
+    // ── 5. Re-install audio tools + refresh deepspeed stub ───────────────
     {
       method: "shell.run",
       params: {
@@ -66,8 +60,6 @@ module.exports = {
           "uv pip install demucs",
           "uv pip install resemble-enhance --no-deps",
           "uv pip install vocos tabulate",
-          "uv pip install imageio-ffmpeg",
-          "uv pip install yt-dlp",
           "python ../make_deepspeed_stub.py",
         ]
       }
