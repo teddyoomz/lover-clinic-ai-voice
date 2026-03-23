@@ -47,7 +47,15 @@ module.exports = {
       }
     },
 
-    // ── 5. Re-install audio tools + refresh deepspeed stub ───────────────
+    // ── 5. Ensure ffmpeg is available (for Video → Audio tab) ────────────
+    {
+      method: "shell.run",
+      params: {
+        message: "conda install -c conda-forge ffmpeg -y"
+      }
+    },
+
+    // ── 6. Re-install audio tools + refresh deepspeed stub ───────────────
     {
       method: "shell.run",
       params: {
