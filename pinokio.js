@@ -29,26 +29,12 @@ module.exports = {
       }]
     } else if (installed) {
       if (running.start) {
-        let local = info.local("start.js")
-        if (local && local.url) {
-          return [{
-            default: true,
-            icon: "fa-solid fa-rocket",
-            text: "Open Web UI",
-            href: local.url,
-          }, {
-            icon: "fa-solid fa-terminal",
-            text: "Terminal",
-            href: "start.js",
-          }]
-        } else {
-          return [{
-            default: true,
-            icon: "fa-solid fa-terminal",
-            text: "Terminal",
-            href: "start.js",
-          }]
-        }
+        return [{
+          default: true,
+          icon: "fa-solid fa-terminal",
+          text: "Terminal",
+          href: "start.js",
+        }]
       } else if (running.update) {
         return [{
           default: true,
