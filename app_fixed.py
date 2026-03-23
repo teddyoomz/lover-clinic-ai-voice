@@ -1352,6 +1352,11 @@ def build_video_tab():
         return gr.update(visible=(fmt == "mp3"))
 
     def _extract_and_save(video_path, fmt, mp3q, save_dir):
+        # Gradio 5.x passes a FileData object; unwrap to a plain path string
+        if hasattr(video_path, "path"):
+            video_path = video_path.path
+        elif hasattr(video_path, "name"):
+            video_path = video_path.name
         audio_path, status = extract_video_audio(video_path, fmt, mp3q)
         if audio_path:
             save_msg = _save_audio_to_dir(audio_path, save_dir, "video_audio")
