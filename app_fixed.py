@@ -1233,6 +1233,14 @@ def extract_video_audio(video_path, output_format, mp3_quality):
     """Extract audio stream from a video file using ffmpeg."""
     import subprocess as _ffmpeg_sp
 
+    # Gradio 5.x returns gr.File as a FileData object or dict, not a plain string.
+    # Normalise to a plain path string before doing anything else.
+    if video_path is not None:
+        if hasattr(video_path, "path"):          # gradio.FileData namedtuple
+            video_path = video_path.path
+        elif isinstance(video_path, dict):        # older Gradio 5.x dict
+            video_path = video_path.get("path") or video_path.get("name", "")
+
     if not video_path:
         gr.Warning("กรุณาอัปโหลดไฟล์วีดีโอ")
         return None, "⚠️ ยังไม่ได้อัปโหลดไฟล์"
