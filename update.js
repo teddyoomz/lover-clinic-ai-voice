@@ -29,7 +29,7 @@ module.exports = {
         venv: "env",
         path: "app",
         message: [
-          "python -c \"lines=[l for l in open('requirements.txt') if '--index-url' not in l]; open('../req_base.txt','w').writelines(lines)\"",
+          "python -c \"import re; skip={'torch','torchvision','torchaudio'}; lines=[l for l in open('requirements.txt') if '--index-url' not in l and re.split(r'[=<>! \\t]',l.strip())[0].lower() not in skip]; open('../req_base.txt','w').writelines(lines)\"",
           "python -c \"import subprocess,sys; r=subprocess.run(['pip','install','-r','../req_base.txt'],capture_output=True,text=True); [print(l) for l in r.stdout.splitlines() if 'dependency resolver' not in l and \\\"pip's dependency\\\" not in l]; sys.exit(0)\"",
           "uv pip install f5-tts-th",
           "uv pip install imageio-ffmpeg",

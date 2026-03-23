@@ -19,7 +19,7 @@ module.exports = {
         venv: "env",
         path: "app",
         message: [
-          "python ../app_fixed.py --enable-v1",
+          "python ../app_fixed.py --enable-v1 --enable-v2",
         ],
         on: [{
           event: "/(http:\\/\\/[0-9.:]+)/",
