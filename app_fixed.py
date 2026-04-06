@@ -421,12 +421,35 @@ RESEMBLE_ENHANCE_OK = False  # set to True once re_denoise_fn / re_enhance_fn lo
 
 
 # ─────────────────────────────────────────────
+# Trailing silence helper (shared by V1, TTS, Enhancer)
+# ─────────────────────────────────────────────
+
+def _append_trailing_silence(audio_result, trailing_seconds):
+    """Append silent samples to audio for CapCut lip-sync spacing.
+
+    audio_result: tuple (sr, np.ndarray) or raw np.ndarray
+    trailing_seconds: float >= 0
+    Returns same format as input with silence appended.
+    """
+    import numpy as np
+    if not trailing_seconds or trailing_seconds <= 0:
+        return audio_result
+    if isinstance(audio_result, tuple) and len(audio_result) == 2:
+        sr, wav = audio_result
+        silence = np.zeros(int(sr * trailing_seconds), dtype=wav.dtype)
+        return (sr, np.concatenate([wav.ravel(), silence]))
+    if isinstance(audio_result, np.ndarray):
+        return audio_result  # no SR info, skip
+    return audio_result
+
+
+# ─────────────────────────────────────────────
 # Voice Conversion helpers
 # ─────────────────────────────────────────────
 
 def convert_voice_v1_wrapper(source_audio_path, target_audio_path, diffusion_steps=30,
                              length_adjust=1.0, inference_cfg_rate=0.7, f0_condition=True,
-                             auto_f0_adjust=True, pitch_shift=0):
+                             auto_f0_adjust=True, pitch_shift=0, trailing_silence=0.0):
     global vc_wrapper_v1
     if vc_wrapper_v1 is None:
         gr.Warning("V1 Voice Conversion ยังไม่โหลด — กรุณา Restart")
@@ -451,6 +474,8 @@ def convert_voice_v1_wrapper(source_audio_path, target_audio_path, diffusion_ste
     ):
         if audio is not None:
             full_audio = audio
+    if full_audio is not None and trailing_silence > 0:
+        full_audio = _append_trailing_silence(full_audio, trailing_silence)
     return full_audio
 
 
@@ -521,7 +546,7 @@ def _transcribe_with_soundfile(wav_path: str) -> str:
     return result["text"].strip()
 
 
-def generate_thai_speech(gen_text, ref_audio, ref_text, model_version, speed, nfe_steps, cfg_strength):
+def generate_thai_speech(gen_text, ref_audio, ref_text, model_version, speed, nfe_steps, cfg_strength, trailing_silence=0.0):
     if not gen_text or not gen_text.strip():
         gr.Warning("กรุณาพิมพ์ข้อความที่ต้องการแปลงเป็นเสียง")
         return None
@@ -556,7 +581,8 @@ def generate_thai_speech(gen_text, ref_audio, ref_text, model_version, speed, nf
             cfg=float(cfg_strength),
             speed=float(speed),
         )
-        return (24000, wav)
+        result = (24000, wav)
+        return _append_trailing_silence(result, trailing_silence)
     except Exception as e:
         import traceback
         traceback.print_exc()
@@ -583,7 +609,7 @@ def load_demucs():
     return demucs_model
 
 
-def process_audio_enhancement(input_audio, do_isolate, do_denoise, do_enhance):
+def process_audio_enhancement(input_audio, do_isolate, do_denoise, do_enhance, trailing_silence=0.0):
     if input_audio is None:
         gr.Warning("กรุณาอัปโหลดไฟล์เสียง")
         return None
@@ -649,6 +675,8 @@ def process_audio_enhancement(input_audio, do_isolate, do_denoise, do_enhance):
                 wav = wav.squeeze()
 
         result = (int(sr), wav.cpu().numpy())
+        if trailing_silence > 0:
+            result = _append_trailing_silence(result, trailing_silence)
         # Final GPU cleanup
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
@@ -719,6 +747,12 @@ def build_v1_tab():
         value=_s("v1_pitch_shift", 0),
         info="เลื่อน pitch ขึ้น/ลงเป็น semitone — แนะนำให้คงไว้ที่ 0 สำหรับภาษาไทยเพื่อไม่ให้วรรณยุกต์เพี้ยน (ใช้งานได้เฉพาะเมื่อเปิดโมเดล F0)",
     )
+    trailing_silence = gr.Number(
+        value=_s("v1_trailing_silence", 0.0),
+        label="เสียงเงียบท้ายคลิป (วินาที)",
+        info="ต่อเสียงเงียบท้ายคลิป สำหรับ lip sync ใน CapCut — 0 = ไม่เพิ่ม",
+        minimum=0.0, maximum=30.0, step=0.1,
+    )
 
     run_btn = gr.Button("แปลงเสียง", variant="primary")
     output_audio = gr.Audio(label="เสียงผลลัพธ์ (Output Audio)", format="wav")
@@ -734,10 +768,11 @@ def build_v1_tab():
     f0_condition.change(fn=lambda v: _save_state(v1_f0_condition=v), inputs=f0_condition, outputs=None)
     auto_f0.change(fn=lambda v: _save_state(v1_auto_f0=v), inputs=auto_f0, outputs=None)
     pitch_shift.change(fn=lambda v: _save_state(v1_pitch_shift=v), inputs=pitch_shift, outputs=None)
+    trailing_silence.change(fn=lambda v: _save_state(v1_trailing_silence=v), inputs=trailing_silence, outputs=None)
 
     run_btn.click(
         fn=convert_voice_v1_wrapper,
-        inputs=[source_audio, target_audio, diffusion_steps, length_adjust, cfg_rate, f0_condition, auto_f0, pitch_shift],
+        inputs=[source_audio, target_audio, diffusion_steps, length_adjust, cfg_rate, f0_condition, auto_f0, pitch_shift, trailing_silence],
         outputs=output_audio,
     ).then(
         fn=lambda audio, d: _save_audio_to_dir(audio, d, "voice_v1"),
@@ -1140,6 +1175,13 @@ def build_tts_tab():
                     info="V1 ธรรมชาติ · V2 แม่นยำ",
                 )
 
+            trailing_silence = gr.Number(
+                value=_s("tts_trailing_silence", 0.0),
+                label="เสียงเงียบท้ายคลิป (วินาที)",
+                info="ต่อเสียงเงียบท้ายคลิป สำหรับ lip sync ใน CapCut — 0 = ไม่เพิ่ม",
+                minimum=0.0, maximum=30.0, step=0.1,
+            )
+
         # ── Right column: reference audio ──
         with gr.Column(scale=2):
             gr.HTML(
@@ -1191,6 +1233,7 @@ def build_tts_tab():
     speed.change(fn=lambda v: _save_state(tts_speed=v), inputs=speed, outputs=None)
     nfe_steps.change(fn=lambda v: _save_state(tts_nfe_steps=v), inputs=nfe_steps, outputs=None)
     cfg_strength.change(fn=lambda v: _save_state(tts_cfg_strength=v), inputs=cfg_strength, outputs=None)
+    trailing_silence.change(fn=lambda v: _save_state(tts_trailing_silence=v), inputs=trailing_silence, outputs=None)
     ref_audio.change(fn=lambda p: _persist_audio(p, "tts_ref_audio"), inputs=ref_audio, outputs=None)
     ref_text.change(fn=lambda v: _save_state(tts_ref_text=v), inputs=ref_text, outputs=None)
 
@@ -1198,7 +1241,7 @@ def build_tts_tab():
 
     generate_btn.click(
         fn=generate_thai_speech,
-        inputs=[gen_text, ref_audio, ref_text, model_version, speed, nfe_steps, cfg_strength],
+        inputs=[gen_text, ref_audio, ref_text, model_version, speed, nfe_steps, cfg_strength, trailing_silence],
         outputs=output_audio,
     ).then(
         fn=lambda audio, d: _save_audio_to_dir(audio, d, "tts"),
@@ -1408,6 +1451,12 @@ def build_enhancer_tab():
                 value=_s("enh_do_enhance", True),
                 info="ใช้ resemble-enhance enhancer — ปรับปรุงความชัดเจน ความสมบูรณ์ และ bandwidth ของเสียง",
             )
+            trailing_silence = gr.Number(
+                value=_s("enh_trailing_silence", 0.0),
+                label="เสียงเงียบท้ายคลิป (วินาที)",
+                info="ต่อเสียงเงียบท้ายคลิป สำหรับ lip sync ใน CapCut — 0 = ไม่เพิ่ม",
+                minimum=0.0, maximum=30.0, step=0.1,
+            )
             process_btn = gr.Button("ประมวลผล", variant="primary", size="lg")
 
         with gr.Column(scale=1):
@@ -1430,10 +1479,11 @@ def build_enhancer_tab():
     do_isolate.change(fn=lambda v: _save_state(enh_do_isolate=v), inputs=do_isolate, outputs=None)
     do_denoise.change(fn=lambda v: _save_state(enh_do_denoise=v), inputs=do_denoise, outputs=None)
     do_enhance.change(fn=lambda v: _save_state(enh_do_enhance=v), inputs=do_enhance, outputs=None)
+    trailing_silence.change(fn=lambda v: _save_state(enh_trailing_silence=v), inputs=trailing_silence, outputs=None)
 
     process_btn.click(
         fn=process_audio_enhancement,
-        inputs=[input_audio, do_isolate, do_denoise, do_enhance],
+        inputs=[input_audio, do_isolate, do_denoise, do_enhance, trailing_silence],
         outputs=output_audio,
     ).then(
         fn=lambda audio, d: _save_audio_to_dir(audio, d, "enhanced"),
