@@ -68,7 +68,15 @@ module.exports = {
       }
     },
 
-    // ── 5. Auto-launch after install ──────────────────────────────────────
+    // ── 5. Mark deps as installed ────────────────────────────────────────
+    {
+      method: "shell.run",
+      params: {
+        message: "cp DEPS_VERSION .deps_installed"
+      }
+    },
+
+    // ── 6. Auto-launch after install ──────────────────────────────────────
     {
       method: "script.start",
       params: {

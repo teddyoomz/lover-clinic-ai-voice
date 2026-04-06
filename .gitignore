@@ -27,3 +27,6 @@ env
 /user_uploads/
 /video_output/
 /downloads/
+# Auto-update markers
+.deps_installed
+.needs_deps_update
