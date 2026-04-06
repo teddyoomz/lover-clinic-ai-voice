@@ -8,7 +8,7 @@ module.exports = {
     {
       method: "shell.run",
       params: {
-        message: "git fetch origin && git reset --hard origin/main || echo [auto-update] skipped"
+        message: "git pull --ff-only || echo [auto-update] skipped (local changes detected)"
       }
     },
 
