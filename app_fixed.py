@@ -1175,11 +1175,11 @@ def build_tts_tab():
                     info="V1 ธรรมชาติ · V2 แม่นยำ",
                 )
 
-            trailing_silence = gr.Number(
+            trailing_silence = gr.Slider(
                 value=_s("tts_trailing_silence", 0.0),
                 label="เสียงเงียบท้ายคลิป (วินาที)",
                 info="ต่อเสียงเงียบท้ายคลิป สำหรับ lip sync ใน CapCut — 0 = ไม่เพิ่ม",
-                minimum=0.0, maximum=30.0, step=0.1,
+                minimum=0.0, maximum=10.0, step=0.5,
             )
 
         # ── Right column: reference audio ──
@@ -1451,11 +1451,11 @@ def build_enhancer_tab():
                 value=_s("enh_do_enhance", True),
                 info="ใช้ resemble-enhance enhancer — ปรับปรุงความชัดเจน ความสมบูรณ์ และ bandwidth ของเสียง",
             )
-            trailing_silence = gr.Number(
+            trailing_silence = gr.Slider(
                 value=_s("enh_trailing_silence", 0.0),
                 label="เสียงเงียบท้ายคลิป (วินาที)",
                 info="ต่อเสียงเงียบท้ายคลิป สำหรับ lip sync ใน CapCut — 0 = ไม่เพิ่ม",
-                minimum=0.0, maximum=30.0, step=0.1,
+                minimum=0.0, maximum=10.0, step=0.5,
             )
             process_btn = gr.Button("ประมวลผล", variant="primary", size="lg")
 
