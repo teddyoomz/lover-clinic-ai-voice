@@ -2,13 +2,16 @@ module.exports = {
   daemon: true,
   run: [
 
-    // ── Auto-update: ดึง launcher scripts ล่าสุดจาก GitHub ──────────────
-    // fetch → reset hard ให้ได้ latest เสมอ ไม่ติด local changes
-    // ถ้า internet หรือ git fail ให้ข้ามต่อไปได้เลย
+    // ── Smart auto-update: เช็ค remote ก่อน pull ──────────────────────
+    // fetch → นับ commits ที่ remote ใหม่กว่า → pull เฉพาะเมื่อมี update
+    // ถ้า local มี uncommitted changes → ff-only จะ skip เอง
     {
       method: "shell.run",
       params: {
-        message: "git pull --ff-only || echo [auto-update] skipped (local changes detected)"
+        message: [
+          "echo [version] local: $(cat VERSION 2>/dev/null || echo unknown)",
+          "git fetch origin --quiet 2>/dev/null && BEHIND=$(git rev-list HEAD..origin/main --count 2>/dev/null || echo 0) && if [ \"$BEHIND\" -gt \"0\" ]; then echo \"[update] $BEHIND new commits — pulling...\" && git pull --ff-only && echo \"[version] updated: $(cat VERSION 2>/dev/null || echo unknown)\"; else echo \"[update] already up to date\"; fi || echo [update] offline — skipped",
+        ]
       }
     },
 

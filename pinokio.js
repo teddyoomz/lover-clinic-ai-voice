@@ -1,3 +1,12 @@
+const fs = require('fs')
+const path = require('path')
+
+function getVersion() {
+  try {
+    return fs.readFileSync(path.join(__dirname, 'VERSION'), 'utf8').trim()
+  } catch { return '?' }
+}
+
 module.exports = {
   version: "5.0",
   title: "Lover Clinic - AI Voice System",
@@ -12,6 +21,7 @@ module.exports = {
       reset: info.running("reset.js"),
       fix: info.running("fix.js"),
     }
+    let ver = getVersion()
 
     if (running.fix) {
       return [{
@@ -29,12 +39,26 @@ module.exports = {
       }]
     } else if (installed) {
       if (running.start) {
-        return [{
-          default: true,
-          icon: "fa-solid fa-terminal",
-          text: "Terminal",
-          href: "start.js",
-        }]
+        let local = info.local("start.js")
+        if (local && local.url) {
+          return [{
+            default: true,
+            icon: "fa-solid fa-rocket",
+            text: "Open Web UI",
+            href: local.url,
+          }, {
+            icon: "fa-solid fa-terminal",
+            text: "Terminal",
+            href: "start.js",
+          }]
+        } else {
+          return [{
+            default: true,
+            icon: "fa-solid fa-terminal",
+            text: "Terminal",
+            href: "start.js",
+          }]
+        }
       } else if (running.update) {
         return [{
           default: true,
@@ -69,9 +93,12 @@ module.exports = {
           href: "fix.js",
         }, {
           icon: "fa-regular fa-circle-xmark",
-          text: "<div><strong>Reset</strong><div>Revert to pre-install state</div></div>",
+          text: `<div><strong>Reset</strong><div>Revert to pre-install state</div></div>`,
           href: "reset.js",
           confirm: "Are you sure you wish to reset the app?"
+        }, {
+          icon: "fa-solid fa-info-circle",
+          text: `v${ver}`,
         }]
       }
     } else {
