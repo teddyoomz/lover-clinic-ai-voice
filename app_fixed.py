@@ -747,11 +747,11 @@ def build_v1_tab():
         value=_s("v1_pitch_shift", 0),
         info="เลื่อน pitch ขึ้น/ลงเป็น semitone — แนะนำให้คงไว้ที่ 0 สำหรับภาษาไทยเพื่อไม่ให้วรรณยุกต์เพี้ยน (ใช้งานได้เฉพาะเมื่อเปิดโมเดล F0)",
     )
-    trailing_silence = gr.Number(
+    trailing_silence = gr.Slider(
         value=_s("v1_trailing_silence", 0.0),
         label="เสียงเงียบท้ายคลิป (วินาที)",
         info="ต่อเสียงเงียบท้ายคลิป สำหรับ lip sync ใน CapCut — 0 = ไม่เพิ่ม",
-        minimum=0.0, maximum=30.0, step=0.1,
+        minimum=0.0, maximum=10.0, step=0.5,
     )
 
     run_btn = gr.Button("แปลงเสียง", variant="primary")
